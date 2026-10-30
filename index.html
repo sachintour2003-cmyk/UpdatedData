@@ -1099,7 +1099,7 @@ const startChequeNo = runningChequeNo || '';
 
 const newCheques = [];
 for (let i = 0; i < chequeCount; i++) {
-const monthTo = addDays(addMonths(monthFrom, 1), -1);
+                const monthTo = addDays(addMonthsAnchored(c.startDate, i + 1), -1);
 const chequeDate = addDays(monthTo, 1);
 newCheques.push({
 sno: runningSno++,
@@ -1180,7 +1180,7 @@ const startChequeNo = runningChequeNo || '';
 
 const newCheques = [];
 for (let i = 0; i < chequeCount; i++) {
-const monthTo = addDays(addMonths(monthFrom, 1), -1);
+                const monthTo = addDays(addMonthsAnchored(c.startDate, i + 1), -1);
 const chequeDate = addDays(monthTo, 1);
 newCheques.push({
 sno: runningSno++, chequeNo: startChequeNo ? incrementCode(startChequeNo, i) : '',
@@ -2158,9 +2158,11 @@ let startChequeNo = userChequeNo || getNextChequeNumber(entryId) || '';
 const existingCheques = getAllChequesFlat(entryId);
 const newCheques = [];
 
-for (let i = 0; i < count; i++) {
-const monthTo = addDays(addMonths(monthFrom, 1), -1);
-const chequeDate = (i === 0 && firstDate) ? new Date(firstDate) : addDays(monthTo, 1);
+let startIdx = (monthFrom.getFullYear() - c.startDate.getFullYear()) * 12 + (monthFrom.getMonth() - c.startDate.getMonth());
+    if (startIdx < 0) startIdx = 0;
+    for (let i = 0; i < count; i++) {
+        const monthTo = addDays(addMonthsAnchored(c.startDate, startIdx + i + 1), -1);
+        const chequeDate = (i === 0 && firstDate) ? new Date(firstDate) : addDays(monthTo, 1);
 newCheques.push({
 sno: existingCheques.length + i + 1,
 chequeNo: startChequeNo ? incrementCode(startChequeNo, i) : '',
@@ -2207,7 +2209,7 @@ nextChequeNo = incrementCode(userChequeNo, oldCount);
 }
 
 for (let i = oldCount; i < count; i++) {
-const monthTo = addDays(addMonths(monthFrom, 1), -1);
+            const monthTo = addDays(addMonthsAnchored(c.startDate, i + 1), -1);
 existingCheques.push({
 sno: i + 1,
 chequeNo: nextChequeNo ? incrementCode(nextChequeNo, i - oldCount) : '',
@@ -3407,7 +3409,7 @@ function runExport(withFormula) {
     if (!_expKind) return;
     
     // Admin Password Prompt
-    const pwd = prompt('Enter Admin Password to proceed with export:');
+    const pwd = prompt('Enter Admin Password to Factory Reset :');
     if (pwd !== 'Abhi@1998#') {
         if (pwd !== null) { // Agar user ne Cancel nahi dabaya
             showToast('Invalid Admin Password! Access Denied.', true);
