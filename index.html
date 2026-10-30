@@ -1859,6 +1859,17 @@ document.getElementById('dashGrid').innerHTML = `
 }
 
 function addMonths(date, n) { const d = new Date(date); d.setMonth(d.getMonth() + n); return d; }
+
+function addMonthsAnchored(baseDate, n) {
+    const d = new Date(baseDate);
+    const targetMonth = d.getMonth() + n;
+    const targetYear = d.getFullYear() + Math.floor(targetMonth / 12);
+    const normalizedMonth = (targetMonth % 12 + 12) % 12;
+    const originalDay = d.getDate();
+    const daysInTargetMonth = new Date(targetYear, normalizedMonth + 1, 0).getDate();
+    const targetDay = Math.min(originalDay, daysInTargetMonth);
+    return new Date(targetYear, normalizedMonth, targetDay);
+}
 function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate() + n); return d; }
 function fmtDate(d) { if (!(d instanceof Date) || isNaN(d)) return '—'; return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }); }
 function fmtDateSlash(d) { if (!(d instanceof Date) || isNaN(d)) return ''; const dd = String(d.getDate()).padStart(2, '0'); const mm = String(d.getMonth() + 1).padStart(2, '0'); return `${dd}/${mm}/${d.getFullYear()}`; }
@@ -3394,6 +3405,16 @@ document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && document
 function closeExportModal() { document.getElementById('exportModal').classList.remove('show'); }
 function runExport(withFormula) {
     if (!_expKind) return;
+    
+    // Admin Password Prompt
+    const pwd = prompt('Enter Admin Password to proceed with export:');
+    if (pwd !== 'Abhi@1998#') {
+        if (pwd !== null) { // Agar user ne Cancel nahi dabaya
+            showToast('Invalid Admin Password! Access Denied.', true);
+        }
+        return; // Password galat hone par export nahi hoga
+    }
+
     closeExportModal();
     window.__exportOpts = { formulas: withFormula, hideLps: !withFormula };
     if (_expKind === 'all') exportEntriesWorkbook(window.__exportOpts);
