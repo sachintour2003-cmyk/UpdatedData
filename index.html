@@ -301,7 +301,7 @@ body.data-sharing-off {
 <div class="brand-bar">
 <div class="brand-mark"><img src="logo.png" class="brand-logo" alt="Logo" onerror="this.remove()"><i class="fa-solid fa-chart-line"></i></div>
 <div class="brand-copy">
-<h1>AR 404</h1>
+<h1>AR Calculation</h1>
 <div class="dedication">Dedicated to my Lovely Daughter Dhaanvi</div>
 </div>
 </div>
@@ -2386,7 +2386,7 @@ showToast('All entries exported', false);
 }
 
 /* ============ EXCEL SCHEDULE EXPORT ============ */
-function addScheduleSheetToWorkbook(wb, entry, usedNames) {
+function addScheduleSheetToWorkbook_orig(wb, entry, usedNames) {
 const allCheques = getAllChequesFlat(entry.id);
 if (allCheques.length === 0) return false;
 const c = computeEntryValues(entry);
@@ -2552,7 +2552,7 @@ setCell(r, 11, '', { fill: TOTAL_BG });
 return true;
 }
 
-async function exportChequeSchedule() {
+async function exportChequeSchedule_orig() {
 if (editingId === null) { showToast('Please save the entry first', true); return; }
 const entry = entries.find(e => e.id === editingId);
 if (!entry) { showToast('Entry not found', true); return; }
@@ -2575,7 +2575,7 @@ showToast('AR Calculation Sheet exported', false);
 }).catch(err => { console.error(err); showToast('Export failed: ' + err.message, true); });
 }
 
-async function exportAllSchedules() {
+async function exportAllSchedules_orig() {
 if (typeof ExcelJS === 'undefined') { showToast('Excel styling library failed to load', true); return; }
 const withSchedules = entries.filter(e => getTotalCheques(e.id) > 0);
 if (withSchedules.length === 0) { showToast('No entries have a cheque schedule to export', true); return; }
@@ -3376,6 +3376,336 @@ onLotIncModeChange();
 }, 60);
 }
 
+/*__AR_PATCH_V2__*/
+/* =====================================================================
+   PATCH V2 — (1) Excel export choice + formulas  (2) ER Register
+   ===================================================================== */
+const EXPORT_POPUP_TITLE = 'Oops! Something Went Wrong';
+const EXPORT_POPUP_TEXT = 'Please choose how you would like to proceed.';
+const EXPORT_LABEL_FORMULA = 'Delete';  // Excel WITH formulas, LPS shown
+const EXPORT_LABEL_PLAIN = 'Block';     // Excel WITHOUT formulas, LPS hidden
+const EXPORT_LABEL_BACK = 'Back';       // returns to the Entries register
+let _expKind = null;
+window.__exportOpts = { formulas: true, hideLps: false };
+
+function openExportModal(kind) { _expKind = kind; document.getElementById('exportModal').classList.add('show'); const b = document.getElementById('opsBack'); if (b) b.focus(); }
+function exportBack() { closeExportModal(); _expKind = null; switchTab('tableView'); }
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && document.getElementById('exportModal') && document.getElementById('exportModal').classList.contains('show')) exportBack(); });
+function closeExportModal() { document.getElementById('exportModal').classList.remove('show'); }
+function runExport(withFormula) {
+    if (!_expKind) return;
+    closeExportModal();
+    window.__exportOpts = { formulas: withFormula, hideLps: !withFormula };
+    if (_expKind === 'all') exportEntriesWorkbook(window.__exportOpts);
+    else if (_expKind === 'sched') exportChequeSchedule_orig();
+    else if (_expKind === 'allsched') exportAllSchedules_orig();
+}
+function exportExcel() { if (entries.length === 0) { showToast('No entries to export', true); return; } openExportModal('all'); }
+function exportChequeSchedule() {
+    if (editingId === null) { showToast('Please save the entry first', true); return; }
+    if (getTotalCheques(editingId) === 0) { showToast('No cheques issued for this entry', true); return; }
+    openExportModal('sched');
+}
+function exportAllSchedules() {
+    if (!entries.some(e => getTotalCheques(e.id) > 0)) { showToast('No entries have a cheque schedule to export', true); return; }
+    openExportModal('allsched');
+}
+function addScheduleSheetToWorkbook(wb, entry, usedNames) {
+    const ok = addScheduleSheetToWorkbook_orig(wb, entry, usedNames);
+    if (!ok) return ok;
+    try { schedPost(wb.worksheets[wb.worksheets.length - 1], entry, window.__exportOpts || { formulas: true, hideLps: false }); }
+    catch (err) { console.error('schedPost failed', err); }
+    return ok;
+}
+
+/* Post-process a schedule sheet: hide LPS, or convert values into formulas */
+function schedPost(ws, entry, o) {
+    const T = (r, c) => { const v = ws.getCell(r, c).value; return (v !== null && typeof v === 'object') ? '' : v; };
+    let band = 0;
+    for (let r = 1; r <= ws.rowCount; r++) { if (T(r, 1) === 'AR CHEQUE ISSUANCE SCHEDULE') { band = r; break; } }
+    if (!band) return;
+    const lab = (t, off) => { for (let r = 1; r < band; r++) for (let c = 1; c <= 9; c++) if (T(r, c) === t) return [r, c + (off || 1)]; return null; };
+    const labP = p => { for (let r = 1; r < band; r++) for (let c = 1; c <= 9; c++) { const v = T(r, c); if (typeof v === 'string' && v.indexOf(p) === 0) return [r, c + 1]; } return null; };
+    const ad = p => ws.getCell(p[0], p[1]).address;
+    const setF = (p, f) => { if (!p || !f) return; const cell = ws.getCell(p[0], p[1]); cell.value = { formula: f, result: cell.value }; };
+
+    const lps = lab('LPS Discount');
+    if (o.hideLps) {
+        if (lps) [[lps[0], lps[1] - 1], [lps[0], lps[1]]].forEach(p => { const cell = ws.getCell(p[0], p[1]); cell.value = null; cell.style = {}; });
+        return;
+    }
+    if (!o.formulas) return;
+
+    // payments table
+    let hr = 0;
+    for (let r = 1; r < band; r++) { if (T(r, 4) === 'Date' && T(r, 5) === 'Amount') { hr = r; break; } }
+    let recvP = lab('Total Received (Net)');
+    if (hr) {
+        let r = hr + 1;
+        while (r < band && T(r, 4) !== 'Total Received') {
+            setF([r, 7], `IF(F${r}>0,E${r}/(100+F${r})*F${r},0)`);
+            setF([r, 8], `E${r}-G${r}`);
+            r++;
+        }
+        const f = hr + 1, l = r - 1;
+        if (l >= f) ['E', 'G', 'H'].forEach((col, i) => setF([r, [5, 7, 8][i]], `SUM(${col}${f}:${col}${l})`));
+        setF(recvP, `H${r}`);
+    }
+    // property / due
+    const area = lab('Area (sq.ft)'), rate = lab('Rate (₹/sq.ft)'), gross = lab('Gross Amount'), dpct = lab('Due %'), due = lab('Due Amount'), bal = lab('Balance');
+    if (area && rate && gross) setF(gross, `${ad(rate)}*${ad(area)}`);
+    if (gross && dpct && due && !(num(entry.manualDue) > 0)) setF(due, `${ad(gross)}*${ad(dpct)}/100`);
+    if (due && recvP && bal) setF(bal, `${ad(due)}-${ad(recvP)}`);
+    // discount
+    const tdisc = lab('Total Discount', 2);
+    const parts = [lps, lab('CP Discount'), lab('TPD (within 30 days)'), lab('On Spot Discount'), lab('I Phone Adjustment'), labP('Other Discount')].filter(Boolean).map(ad);
+    if (tdisc && parts.length) setF(tdisc, `SUM(${parts.join(',')})`);
+    // AR terms
+    const per = lab('AR Period / Cheques'), arm = lab('AR Monthly (1% of Received + Discount)'), tds = lab('TDS @ 10% (Monthly)'), net = lab('Net Monthly Payable'), tp = lab('Total Payable');
+    if (arm && recvP && tdisc && !(num(entry.manualArMonthly) > 0)) setF(arm, `ROUND((${ad(recvP)}+${ad(tdisc)})*0.01,0)`);
+    if (arm && tds) setF(tds, `ROUND(${ad(arm)}*0.1,0)`);
+    if (arm && tds && net) setF(net, `${ad(arm)}-${ad(tds)}`);
+    if (net && per && tp) setF(tp, `ROUND(${ad(net)}*${ad(per)},0)`);
+    // cheque table
+    let ch = 0;
+    for (let r = band; r <= ws.rowCount; r++) { if (T(r, 1) === 'S.No' && T(r, 2) === 'Cheque No.') { ch = r; break; } }
+    if (ch) {
+        let r = ch + 1;
+        while (r <= ws.rowCount && T(r, 1) !== 'Grand Total') {
+            const g = num(T(r, 5)), t = num(T(r, 6)), n = num(T(r, 7));
+            if (Math.round(g * 0.1) === t) setF([r, 6], `ROUND(E${r}*0.1,0)`);
+            if (g - t === n) setF([r, 7], `E${r}-F${r}`);
+            r++;
+        }
+        const f = ch + 1, l = r - 1;
+        if (l >= f && T(r, 1) === 'Grand Total') ['E', 'F', 'G'].forEach((col, i) => setF([r, 5 + i], `SUM(${col}${f}:${col}${l})`));
+    }
+}
+
+function expDownload(wb, name) {
+    return wb.xlsx.writeBuffer().then(buf => {
+        const url = URL.createObjectURL(new Blob([buf], { type: 'application/octet-stream' }));
+        const a = document.createElement('a'); a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        showToast('Excel exported', false);
+    }).catch(err => { console.error(err); showToast('Export failed: ' + err.message, true); });
+}
+
+/* Export All Entries — real Excel formulas (or plain values without LPS) */
+function exportEntriesWorkbook(o) {
+    if (typeof ExcelJS === 'undefined') { showToast('Excel library failed to load', true); return; }
+    const C = [], add = (k, h, v, x) => C.push(Object.assign({ k, h, v }, x || {}));
+    const pays = e => e.payments || [];
+    add('sno', 'S.no', (e, c, i) => i + 1);
+    add('co', 'Company', e => e.company || 'BEPL');
+    add('unit', 'Unit No.', e => e.unitNo || '');
+    add('dup', 'Duplicate Reason', e => e.duplicateReason || '');
+    add('imp', 'Imported', e => e.isImported ? 'Yes' : 'No');
+    add('src', 'Source Sheet', e => e.sourceSheet || '');
+    add('client', 'Name of the client', e => e.client || '');
+    add('desc', 'Description', e => e.description || '');
+    add('cp', 'CP', e => e.cp || '');
+    add('rm', 'RM', e => e.rm || '');
+    add('floor', 'Floor', e => e.floor || '');
+    add('area', 'Area', e => num(e.area), { n: 1 });
+    add('rate', 'Rate', e => num(e.rate), { n: 1 });
+    add('gcp', 'Gold for CP', e => e.goldCp || '');
+    add('gcl', 'Gold for client', e => e.goldClient || '');
+    if (!o.hideLps) add('lps', 'LPS Dis.', e => num(e.lps), { n: 1 });
+    add('cpd', 'CP Dis.', e => num(e.cpDisc), { n: 1 });
+    add('iph', 'I Phone Adjustment', e => num(e.iphone), { n: 1 });
+    add('tpd', 'TPD (within 30 days)', e => num(e.tpd), { n: 1 });
+    add('spot', 'On Spot Discount', e => num(e.spot), { n: 1 });
+    add('ot', 'Other Discount Type', e => e.otherDiscType || '');
+    add('od', 'Other Discount Amount', e => num(e.otherDisc), { n: 1 });
+    add('tdisc', 'Total Discount', (e, c) => c.totalDisc, { n: 1, f: (r, L) => 'SUM(' + ['lps', 'cpd', 'iph', 'tpd', 'spot', 'od'].map(k => L[k] + r).join(',') + ')' });
+    add('dd', 'Discount Date', e => e.discountDate || '');
+    add('dpct', 'Due %', e => num(e.duePct), { n: 1 });
+    add('mdue', 'Manual Due Override', e => num(e.manualDue) > 0 ? num(e.manualDue) : '', { n: 1 });
+    add('mar', 'Manual AR Monthly', e => num(e.manualArMonthly) > 0 ? num(e.manualArMonthly) : '', { n: 1 });
+    add('status', 'Status', e => e.status || '');
+    add('psplit', 'Payee Split', (e, c) => c.hasPayeeSplit ? c.payeeSplits.map(p => `${p.name}: ${p.sharePct}% (Net ₹${p.net})`).join(' | ') : '');
+    add('pcnt', 'Total Payment Count', e => pays(e).length);
+    add('pdates', 'All Payment Dates', e => pays(e).map(p => p.date).filter(Boolean).join(', '));
+    add('pamts', 'All Payment Amounts', e => pays(e).map(p => num(p.amount)).join(', '));
+    add('pmodes', 'All Payment Modes', e => pays(e).map(p => p.mode).filter(Boolean).join(', '));
+    add('pdet', 'All Payments (Detail)', e => pays(e).map(p => `${p.date || ''} | ₹${num(p.amount).toFixed(2)} | ${p.mode || ''}`).join('\n'));
+    add('bank', 'Bank', e => e.bank || '');
+    add('ref', 'Ref No.', e => e.ref || '');
+    add('pan', 'PAN No.', e => e.pan || '');
+    add('fav', 'Favouring', e => e.favouring || '');
+    add('chq', 'Last Issued Cheque No.', e => e.chequeNo || '');
+    add('ctrl', 'Control No.', e => e.controlNo || '');
+    add('gross', 'Gross Amount', (e, c) => c.gross, { n: 1, f: (r, L) => `${L.area}${r}*${L.rate}${r}` });
+    add('due', 'Due Amount', (e, c) => c.due, { n: 1, f: (r, L) => `IF(N(${L.mdue}${r})>0,${L.mdue}${r},${L.gross}${r}*${L.dpct}${r}/100)` });
+    add('grecv', 'Total Received (Gross)', (e, c) => c.grossReceived, { n: 1 });
+    add('gst', 'GST Total', (e, c) => c.gstTotal, { n: 1 });
+    add('recv', 'Amount Received (Net)', (e, c) => c.received, { n: 1, f: (r, L) => `${L.grecv}${r}-${L.gst}${r}` });
+    add('bal', 'Balance', (e, c) => c.balance, { n: 1, f: (r, L) => `${L.due}${r}-${L.recv}${r}` });
+    add('elig', 'AR Eligible', (e, c) => c.eligible ? 'Yes' : 'No', { f: (r, L, e) => e.isImported ? `IF(${L.due}${r}>0,"Yes","No")` : `IF(AND(${L.due}${r}>0,${L.recv}${r}+${L.tdisc}${r}>=${L.due}${r}),"Yes","No")` });
+    add('per', 'AR Period (Months)', (e, c) => c.period, { n: 1 });
+    add('arm', 'AR Monthly (1% of Received + Discount)', (e, c) => c.arMonthly, { n: 1, f: (r, L, e) => num(e.manualArMonthly) > 0 ? null : `ROUND((${L.recv}${r}+${L.tdisc}${r})*0.01,0)` });
+    add('tds', 'TDS (10%)', (e, c) => c.tds, { n: 1, f: (r, L) => `ROUND(${L.arm}${r}*0.1,0)` });
+    add('netm', 'Net Monthly', (e, c) => c.net, { n: 1, f: (r, L) => `${L.arm}${r}-${L.tds}${r}` });
+    add('tp', 'Total Payable', (e, c) => c.totalPayable, { n: 1, f: (r, L) => `ROUND(${L.netm}${r}*${L.per}${r},0)` });
+
+    const colL = i => { let s = '', n = i + 1; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+    const L = {}; C.forEach((c, i) => { L[c.k] = colL(i); });
+    const wb = new ExcelJS.Workbook(); wb.creator = 'AR Calculation Tool'; wb.created = new Date();
+    const ws = wb.addWorksheet('AR Entries', { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws.columns = C.map(c => ({ width: Math.max(14, Math.min(34, c.h.length + 4)) }));
+    const thin = { style: 'thin', color: { argb: 'FFB9C2D6' } }, bd = { top: thin, left: thin, bottom: thin, right: thin };
+    const hr = ws.getRow(1); hr.height = 34;
+    C.forEach((c, i) => { const cell = hr.getCell(i + 1); cell.value = c.h; cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0A1E3D' } }; cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }; cell.border = bd; });
+    entries.forEach((e, i) => {
+        const c = computeEntryValues(e), r = i + 2;
+        C.forEach((col, j) => {
+            let val = col.v(e, c, i); if (val === undefined || val === null) val = '';
+            const f = (o.formulas && col.f) ? col.f(r, L, e) : null;
+            const cell = ws.getCell(r, j + 1);
+            cell.value = f ? { formula: f, result: val } : val;
+            if (col.n) cell.numFmt = '#,##0.00';
+            cell.border = bd;
+        });
+    });
+    ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: C.length } };
+    expDownload(wb, `AR_Calculation_Tool_${new Date().toISOString().slice(0, 10)}${o.formulas ? '' : '_values'}.xlsx`);
+}
+
+/* =====================================================================
+   ER REGISTER (separate storage: Firebase node "er_entries" / localStorage)
+   ===================================================================== */
+const ER_LS = 'ar_er_register_v1';
+let erEntries = [], erEditKey = null;
+const erMon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function erFmtDate(iso) { if (!iso) return '—'; const d = new Date(iso + 'T00:00:00'); if (isNaN(d)) return iso; return String(d.getDate()).padStart(2, '0') + '-' + erMon[d.getMonth()] + '-' + String(d.getFullYear()).slice(-2); }
+function erGetLS() { try { return JSON.parse(localStorage.getItem(ER_LS) || '{}'); } catch (e) { return {}; } }
+function erSetLS(o) { try { localStorage.setItem(ER_LS, JSON.stringify(o)); } catch (e) { console.error(e); } }
+function erLoad() {
+    if (usingFirebase) database.ref('er_entries').on('value', s => erProcess(s.val()), err => showToast('ER load error: ' + err.message, true));
+    else erProcess(erGetLS());
+}
+function erProcess(data) {
+    erEntries = Object.entries(data || {}).map(([k, v]) => Object.assign({}, v, { _key: k })).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    erRender();
+}
+function erWrite(key, rec) {
+    if (usingFirebase) { const ref = key ? database.ref('er_entries/' + key) : database.ref('er_entries').push(); return ref.set(rec).catch(err => { showToast('ER save error: ' + err.message, true); throw err; }); }
+    const d = erGetLS(); const k = key || ('er_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6));
+    d[k] = rec; erSetLS(d); erProcess(d); return Promise.resolve();
+}
+function erRemove(key) {
+    if (usingFirebase) return database.ref('er_entries/' + key).remove();
+    const d = erGetLS(); delete d[key]; erSetLS(d); erProcess(d); return Promise.resolve();
+}
+function erVal(id) { return document.getElementById(id).value.trim(); }
+function erSave() {
+    const rec = { party: erVal('er_party'), ref: erVal('er_ref'), amount: num(erVal('er_amount')), dueDate: erVal('er_due'), chNo: erVal('er_chno') };
+    if (!rec.party) { showToast('Party name is required', true); document.getElementById('er_party').focus(); return; }
+    const old = erEditKey ? erEntries.find(e => e._key === erEditKey) : null;
+    rec.createdAt = old ? (old.createdAt || Date.now()) : Date.now();
+    erWrite(erEditKey, rec).then(() => { showToast(erEditKey ? 'ER entry updated' : 'ER entry saved', false); erCancel(); }).catch(() => {});
+}
+function erCancel() {
+    erEditKey = null;
+    ['er_party', 'er_ref', 'er_amount', 'er_due', 'er_chno'].forEach(id => { document.getElementById(id).value = ''; });
+    document.getElementById('erFormTitle').textContent = 'New ER Entry';
+}
+function erEdit(key) {
+    const e = erEntries.find(x => x._key === key); if (!e) return;
+    erEditKey = key;
+    document.getElementById('er_party').value = e.party || '';
+    document.getElementById('er_ref').value = e.ref || '';
+    document.getElementById('er_amount').value = e.amount || '';
+    document.getElementById('er_due').value = e.dueDate || '';
+    document.getElementById('er_chno').value = e.chNo || '';
+    document.getElementById('erFormTitle').textContent = 'Edit ER Entry';
+    document.getElementById('erView').scrollIntoView({ behavior: 'smooth' });
+}
+function erDelete(key) {
+    const e = erEntries.find(x => x._key === key); if (!e) return;
+    if (!confirm(`Delete ER entry for "${e.party}"?`)) return;
+    erRemove(key).then(() => showToast('ER entry deleted', false)).catch(err => showToast('Error: ' + err.message, true));
+}
+function erRender() {
+    const tb = document.getElementById('erTbody'); if (!tb) return;
+    const q = (document.getElementById('erSearch').value || '').toLowerCase().trim();
+    const badge = document.getElementById('erCountBadge'); if (badge) badge.textContent = erEntries.length;
+    let total = 0, shown = 0;
+    tb.innerHTML = erEntries.map((e, i) => {
+        if (q && !((e.party || '') + ' ' + (e.ref || '') + ' ' + (e.chNo || '')).toLowerCase().includes(q)) return '';
+        total += num(e.amount); shown++;
+        return `<tr><td>${i + 1}</td><td>${escapeHtml(e.party)}</td><td>${escapeHtml(e.ref || '—')}</td><td class="num">${num(e.amount).toLocaleString('en-IN')}</td><td>${erFmtDate(e.dueDate)}</td><td class="num">${escapeHtml(e.chNo || '—')}</td><td class="actions-cell"><button title="Edit" onclick="erEdit('${e._key}')"><i class="fa-solid fa-pen"></i></button><button title="Delete" class="del" onclick="erDelete('${e._key}')"><i class="fa-solid fa-trash"></i></button></td></tr>`;
+    }).join('');
+    document.getElementById('erEmpty').style.display = shown ? 'none' : 'block';
+    document.getElementById('erTotal').textContent = shown ? `Total (${shown} entries): ₹ ${total.toLocaleString('en-IN')}` : '';
+}
+function erExport() {
+    if (!erEntries.length) { showToast('No ER entries to export', true); return; }
+    const rows = [['S.No', 'Party', 'EOI / Ref', 'Amount (Rs)', 'Cheque Due Date', 'Ch No.']];
+    let total = 0;
+    erEntries.forEach((e, i) => { total += num(e.amount); rows.push([i + 1, e.party || '', e.ref || '', num(e.amount), erFmtDate(e.dueDate), String(e.chNo || '')]); });
+    const ws = XLSX.utils.aoa_to_sheet(rows), n = rows.length;
+    ws['C' + (n + 1)] = { t: 's', v: 'Total' };
+    ws['D' + (n + 1)] = { t: 'n', f: 'SUM(D2:D' + n + ')', v: total };
+    ws['!ref'] = 'A1:F' + (n + 1);
+    ws['!cols'] = [{ wch: 6 }, { wch: 26 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 12 }];
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'ER Register');
+    XLSX.writeFile(wb, `ER_Register_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    showToast('ER Register exported', false);
+}
+function erPrint() {
+    if (!erEntries.length) { showToast('No ER entries to print', true); return; }
+    let total = 0;
+    const rows = erEntries.map((e, i) => { total += num(e.amount); return `<tr><td class="c">${i + 1}</td><td>${escapeHtml(e.party)}</td><td>${escapeHtml(e.ref || '—')}</td><td class="r">${num(e.amount).toLocaleString('en-IN')}</td><td class="c">${erFmtDate(e.dueDate)}</td><td class="c">${escapeHtml(e.chNo || '—')}</td></tr>`; }).join('');
+    doPrint(`<div class="pr-page">${buildPrintBrand()}<div class="pr-title">ER REGISTER</div><table class="pr-data"><thead><tr><th>S.No</th><th>Party</th><th>EOI / Ref</th><th>Amount (Rs)</th><th>Cheque Due Date</th><th>Ch No.</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="3" class="r">Total</td><td class="r">${total.toLocaleString('en-IN')}</td><td colspan="2"></td></tr></tfoot></table><div class="pr-sign"><div>Prepared By</div><div>Checked By</div><div>Authorised Signatory</div></div></div>`);
+}
+
+function patchV2Init() {
+    document.querySelector('nav.tabs').insertAdjacentHTML('beforeend', `<div class="tab" data-view="erView" onclick="switchTab('erView');erRender()"><i class="fa-solid fa-receipt"></i> ER Register <span class="count" id="erCountBadge">0</span></div>`);
+    document.getElementById('toast').insertAdjacentHTML('beforebegin', `<div class="view" id="erView">
+<div class="card"><div class="card-head"><h3><i class="fa-solid fa-receipt"></i> <span id="erFormTitle">New ER Entry</span></h3></div>
+<div class="card-body"><div class="grid grid-5">
+<div class="field"><label>Party <span class="req">*</span></label><input id="er_party" placeholder="e.g. Anju Bisht"></div>
+<div class="field"><label>EOI / Ref</label><input id="er_ref" placeholder="e.g. EOI-245"></div>
+<div class="field"><label>Amount (Rs)</label><input id="er_amount" type="number" step="any" placeholder="0"></div>
+<div class="field"><label>Cheque Due Date</label><input id="er_due" type="date"></div>
+<div class="field"><label>Ch No.</label><input id="er_chno" placeholder="e.g. 000081"></div>
+</div></div>
+<div class="form-actions"><button class="btn btn-outline" onclick="erCancel()"><i class="fa-solid fa-xmark"></i> Cancel</button><button class="btn btn-primary" onclick="erSave()"><i class="fa-solid fa-floppy-disk"></i> Save ER Entry</button></div></div>
+<div class="card"><div class="card-head"><h3><i class="fa-solid fa-table-list"></i> ER Register</h3><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-outline btn-sm" onclick="erPrint()"><i class="fa-solid fa-print"></i> Print</button><button class="btn btn-success btn-sm" onclick="erExport()"><i class="fa-solid fa-file-excel"></i> Export Excel</button></div></div>
+<div style="padding:14px 20px 6px;"><div class="search-bar"><i class="fa-solid fa-search" style="color:var(--text-mute);"></i><input type="text" id="erSearch" placeholder="Search by Party, EOI / Ref, Ch No...." oninput="erRender()"></div></div>
+<div class="table-scroll"><table class="data-table" style="min-width:760px;"><thead><tr><th>S.No</th><th>Party</th><th>EOI / Ref</th><th>Amount (Rs)</th><th>Cheque Due Date</th><th>Ch No.</th><th>Actions</th></tr></thead><tbody id="erTbody"></tbody></table></div>
+<div class="empty-state" id="erEmpty" style="display:none;"><i class="fa-regular fa-folder-open"></i><h4>No ER entries</h4><p>Add an entry using the form above.</p></div>
+<div style="padding:14px 20px;font-weight:700;text-align:right;font-family:var(--font-num);" id="erTotal"></div></div></div>`);
+    const st = document.createElement('style');
+    st.textContent = `.ops-box{max-width:430px;text-align:center;padding:32px 28px 26px;border-top:5px solid var(--red)}
+.ops-icon{width:70px;height:70px;border-radius:50%;background:var(--red-bg);color:var(--red);display:flex;align-items:center;justify-content:center;font-size:30px;margin:0 auto 16px}
+.ops-box h3{font-size:20px;color:var(--ink);margin-bottom:8px}
+.ops-box p{font-size:13.5px;color:var(--text-mute);line-height:1.6;margin:0 0 24px}
+.ops-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.ops-btn{display:flex;align-items:center;justify-content:center;gap:9px;padding:12px 14px;border-radius:10px;border:1px solid transparent;font-size:14px;font-weight:700;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,background .15s ease}
+.ops-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(10,30,61,.18)}
+.ops-btn:focus-visible{outline:3px solid rgba(10,30,61,.25);outline-offset:2px}
+.ops-danger{background:var(--red);color:#fff}.ops-danger:hover{background:#a83723}
+.ops-dark{background:var(--ink);color:#fff}.ops-dark:hover{background:var(--ink-soft)}
+.ops-ghost{grid-column:1/-1;background:#fff;color:var(--ink);border-color:var(--line)}.ops-ghost:hover{border-color:var(--ink)}
+@media(max-width:420px){.ops-actions{grid-template-columns:1fr}}`;
+    document.head.appendChild(st);
+    document.body.insertAdjacentHTML('beforeend', `<div class="modal-overlay" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="opsTitle"><div class="modal-box ops-box">
+<div class="ops-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+<h3 id="opsTitle">${EXPORT_POPUP_TITLE}</h3>
+<p>${EXPORT_POPUP_TEXT}</p>
+<div class="ops-actions">
+<button class="ops-btn ops-danger" onclick="runExport(true)"><i class="fa-solid fa-trash"></i> ${EXPORT_LABEL_FORMULA}</button>
+<button class="ops-btn ops-dark" onclick="runExport(false)"><i class="fa-solid fa-ban"></i> ${EXPORT_LABEL_PLAIN}</button>
+<button class="ops-btn ops-ghost" id="opsBack" onclick="exportBack()"><i class="fa-solid fa-arrow-left"></i> ${EXPORT_LABEL_BACK}</button>
+</div></div></div>`);
+    erLoad();
+}
+setTimeout(patchV2Init, 0);
+
+
 /* ---------------- INIT ---------------- */
 
 /* ============ DATA SHARING CONTROL ============ */
@@ -3507,5 +3837,3 @@ window.printAllEntries = printAllEntries;
 </script>
 </body>
 </html> 
- 
-
