@@ -4,7 +4,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>AR Calculation Tool</title>
+<title>AR Tool</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
 <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
@@ -272,13 +272,36 @@ body.printing > *:not(#printArea) { display: none !important; }
 .pr-page:last-child { page-break-after: auto; break-after: auto; }
 .pr-tbl, table.pr-data, .pr-lot { page-break-inside: avoid; break-inside: avoid; }
 }
+
+/* DATA SHARING CONTROL CSS */
+#dataSharingBanner {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    padding: 20px;
+    text-align: center;
+    font-size: 18px;
+    font-weight: bold;
+    z-index: 9999;
+    font-family: var(--font-ui);
+    display: none;
+}
+#dataSharingBanner.off {
+    display: block;
+    background: var(--red-bg);
+    color: var(--red);
+    border-bottom: 3px solid var(--red);
+}
+body.data-sharing-off {
+    padding-top: 80px;
+}
+
 </style>
 </head>
 <body>
 <div class="brand-bar">
 <div class="brand-mark"><img src="logo.png" class="brand-logo" alt="Logo" onerror="this.remove()"><i class="fa-solid fa-chart-line"></i></div>
 <div class="brand-copy">
-<h1>AR Calculation Tool</h1>
+<h1>AR 404</h1>
 <div class="dedication">Dedicated to my Lovely Daughter Dhaanvi</div>
 </div>
 </div>
@@ -3354,7 +3377,68 @@ onLotIncModeChange();
 }
 
 /* ---------------- INIT ---------------- */
-function init() { initStorage(); loadEntriesFromFirebase(); renderPaymentRows(); renderEntriesTable(); renderDashboard(); }
+
+/* ============ DATA SHARING CONTROL ============ */
+let isDataSharingOn = false;
+
+function initDataSharingControl() {
+    if (!usingFirebase || !database) {
+        console.warn('Firebase not connected. Data sharing control disabled.');
+        return;
+    }
+
+    const controlRef = database.ref('control/data_sharing_on');
+    
+    controlRef.on('value', (snapshot) => {
+        const val = snapshot.val();
+        isDataSharingOn = (val === true);
+        console.log('Data Sharing Status:', isDataSharingOn ? 'ON' : 'OFF');
+        applyDataSharingState(isDataSharingOn);
+    }, (error) => {
+        console.error('Error listening to control node:', error);
+    });
+}
+
+function applyDataSharingState(isOn) {
+    const tabs = document.querySelector('nav.tabs');
+    const views = document.querySelectorAll('.view');
+    const headerActions = document.querySelector('.header-actions');
+    const banner = document.getElementById('dataSharingBanner');
+
+    if (!banner) {
+        const newBanner = document.createElement('div');
+        newBanner.id = 'dataSharingBanner';
+        document.body.appendChild(newBanner);
+    }
+
+    if (isOn) {
+        document.body.classList.remove('data-sharing-off');
+        if (tabs) tabs.style.display = 'flex';
+        views.forEach(v => v.style.display = ''); 
+        if (headerActions) headerActions.style.display = 'flex';
+        const activeView = document.querySelector('.view.active');
+        if (activeView) activeView.style.display = 'block';
+        document.getElementById('dataSharingBanner').classList.remove('off');
+    } else {
+        document.body.classList.add('data-sharing-off');
+        if (tabs) tabs.style.display = 'none';
+        views.forEach(v => v.style.display = 'none');
+        if (headerActions) headerActions.style.display = 'none';
+        const bannerEl = document.getElementById('dataSharingBanner');
+        bannerEl.innerHTML = '<i class="fa-solid fa-lock"></i> Welcome';
+        bannerEl.classList.add('off');
+    }
+}
+// ============ END DATA SHARING CONTROL ============
+
+function init() { 
+    initStorage(); 
+    loadEntriesFromFirebase(); 
+    initDataSharingControl(); // <-- Added for ON/OFF switch
+    renderPaymentRows(); 
+    renderEntriesTable(); 
+    renderDashboard(); 
+}
 init();
 
 window.switchTab = switchTab;
@@ -3425,4 +3509,3 @@ window.printAllEntries = printAllEntries;
 </html> 
  
 
-v
